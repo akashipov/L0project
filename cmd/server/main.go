@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/akashipov/L0project/internal/arguments"
 	"github.com/akashipov/L0project/internal/storage/order"
@@ -34,6 +36,15 @@ import (
 // }
 
 func main() {
+	done := make(chan struct{})
+	ctx := context.Background()
+	go func() {
+		sigint := make(chan os.Signal, 1)
+		signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigint
+		fmt.Printf("\nSignal: %v\n", sig)
+		done <- struct{}{}
+	}()
 	err := arguments.ParseArgsServer()
 	if err != nil {
 		fmt.Println(err.Error())
@@ -51,7 +62,6 @@ func main() {
 	}
 	fmt.Println(arguments.NatsURL)
 	sc, err := nats.Connect(arguments.NatsURL)
-	defer sc.Close()
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -64,21 +74,44 @@ func main() {
 			fmt.Println(err.Error())
 			return
 		}
-		ctx := context.Background()
-		err = dbWorker.AddUser(nil, ctx, *ord.User)
+		addressID, err := dbWorker.AddAddress(ctx, &ord.User.Address)
+		if err != nil {
+			fmt.Println(err.Error())
+			return
+		}
+		fmt.Printf("Adress ID '%d' was added\n", addressID)
+
+		err = dbWorker.CreateTx()
+		if err != nil {
+			fmt.Println(err.Error())
+			return
+		}
+		ord.User.AddressID = addressID
+		err = dbWorker.AddUser(ctx, *ord.User)
+		if err != nil {
+			fmt.Println(err.Error())
+			return
+		}
+		err = dbWorker.AddPaymentInfo(ctx, ord.PaymentInfo)
 		if err != nil {
 			fmt.Println(err.Error())
 			return
 		}
 		ordNew := ord
-		ordNew.PaymentInfo = nil
-		err = dbWorker.AddOrder(nil, ctx, ordNew)
+		err = dbWorker.AddOrder(ctx, ordNew)
 		if err != nil {
 			fmt.Println(err.Error())
 			return
 		}
+		err = dbWorker.TX.Commit()
+		if err != nil {
+			fmt.Println(err.Error())
+			return
+		}
+		dbWorker.TX = nil
 	})
-	for {
-		time.Sleep(time.Second * 5)
-	}
+	<-done
+	sc.Close()
+	fmt.Println("Subscription was closed!")
+	fmt.Println("Server is done")
 }

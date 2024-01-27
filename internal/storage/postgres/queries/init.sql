@@ -1,21 +1,22 @@
-CREATE TABLE IF NOT EXISTS adresses (
+CREATE TABLE IF NOT EXISTS addresses (
     id SERIAL PRIMARY KEY,
     zipcode VARCHAR(20),
     city VARCHAR(20),
     address VARCHAR(50),
-    region VARCHAR(20)
+    region VARCHAR(20),
+    CONSTRAINT unique_address UNIQUE (address, zipcode, city, region)
 );
 
 CREATE TABLE IF NOT EXISTS users (
     phonenumber VARCHAR(13) UNIQUE PRIMARY KEY,
     name VARCHAR(50) NOT NULL,
     email VARCHAR(50) UNIQUE,
-    address_id SERIAL CONSTRAINT fk_address FOREIGN KEY(address_id) REFERENCES adresses(id)
+    address_id SERIAL,
+    CONSTRAINT fk_address FOREIGN KEY(address_id) REFERENCES addresses(id)
 );
 
 CREATE TABLE IF NOT EXISTS payments (
     transaction_id VARCHAR(50) PRIMARY KEY,
-    order_id VARCHAR(50) UNIQUE,
     request_id VARCHAR(50) UNIQUE NOT NULL DEFAULT '',
     currency VARCHAR(10) NOT NULL,
     provider_id VARCHAR(20) NOT NULL,
@@ -45,19 +46,19 @@ CREATE TABLE IF NOT EXISTS orders (
     date_created TIMESTAMPTZ NOT NULL
 );
 
-DO $$
-BEGIN
-    IF NOT EXISTS(
-        SELECT constraint_name
-        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-        WHERE table_name = 'payments'
-        AND constraint_name = 'fk_order_id_payments'
-    ) THEN
-        ALTER TABLE payments ADD CONSTRAINT fk_order_id_payments FOREIGN KEY(order_id) REFERENCES orders(order_id);
-    END IF;
-    RETURN;
-END
-$$;
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS(
+--         SELECT constraint_name
+--         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+--         WHERE table_name = 'payments'
+--         AND constraint_name = 'fk_order_id_payments'
+--     ) THEN
+--         ALTER TABLE payments ADD CONSTRAINT fk_order_id_payments FOREIGN KEY(order_id) REFERENCES orders(order_id);
+--     END IF;
+--     RETURN;
+-- END
+-- $$;
 
 CREATE TABLE IF NOT EXISTS items (
     chrt_id BIGINT PRIMARY KEY NOT NULL,
@@ -73,3 +74,14 @@ CREATE TABLE IF NOT EXISTS items (
     order_id VARCHAR(50) NOT NULL,
     CONSTRAINT fk_order_id_items FOREIGN KEY(order_id) REFERENCES orders(order_id)
 );
+
+CREATE OR REPLACE FUNCTION add_address(add VARCHAR(50), zip VARCHAR(50), c VARCHAR(50), r VARCHAR(50)) RETURNS INTEGER AS $$
+DECLARE founded_id INTEGER;
+BEGIN
+SELECT id FROM addresses WHERE address = add and zipcode = zip and city = c and region = r INTO founded_id;
+IF NOT FOUND THEN
+    INSERT INTO addresses(zipcode, city, address, region) VALUES(zip, c, add, r) RETURNING id INTO founded_id;
+END IF;
+RETURN founded_id;
+END;
+$$ LANGUAGE plpgsql;

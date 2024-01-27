@@ -10,13 +10,28 @@ import (
 	"path/filepath"
 
 	"github.com/akashipov/L0project/internal/arguments"
+	"github.com/akashipov/L0project/internal/storage/item"
 	"github.com/akashipov/L0project/internal/storage/order"
+	"github.com/akashipov/L0project/internal/storage/payment"
 	"github.com/akashipov/L0project/internal/storage/user"
 	_ "github.com/lib/pq"
 )
 
 type SqlWorker struct {
 	DB *sql.DB
+	TX *sql.Tx
+}
+
+func (w *SqlWorker) Rollback() error {
+	if w.TX != nil {
+		err := w.TX.Rollback()
+		if err != nil {
+			return err
+		}
+		w.TX = nil
+		return nil
+	}
+	return errors.New("Rollback tx is already nil")
 }
 
 func NewSqlWorker() (*SqlWorker, error) {
@@ -27,79 +42,163 @@ func NewSqlWorker() (*SqlWorker, error) {
 	return &SqlWorker{DB: DB}, nil
 }
 
-func (w *SqlWorker) AddOrder(tx *sql.Tx, ctx context.Context, ord order.Order) error {
+func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
 	var err error
 	query := "INSERT INTO orders(order_id, track_number, entry, delivery_user, " +
 		"transaction_id, locale, internal_signature, customer_id, delivery_service, shardkey," +
 		"sm_id, oof_shard, date_created) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)"
-	var transID *string
+	var transID sql.NullString
+	transID.Valid = true
 	if ord.PaymentInfo == nil {
-		transID = nil
+		transID.Valid = false
 	} else {
-		transID = &ord.PaymentInfo.TransactionID
+		transID.String = ord.PaymentInfo.TransactionID
 	}
-
-	if tx == nil {
+	if w.TX == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, ord.OrderID,
 			ord.TrackNumber, ord.Entry, ord.User.Phonenumber,
 			transID, ord.Locale, ord.InternalSignature, ord.CustomerID, ord.DeliveryService,
 			ord.ShardKey, ord.SmID, ord.OofShard, ord.DateCreated,
 		)
-		if err != nil {
-			return fmt.Errorf("Problem with execution of Add Order query: %w", err)
-		}
 	} else {
-		_, err = tx.ExecContext(
+		_, err = w.TX.ExecContext(
 			ctx, query, ord.OrderID,
-			ord.TrackNumber, ord.Entry, ord.User.Email,
-			nil, ord.Locale, ord.InternalSignature, ord.CustomerID, ord.DeliveryService,
+			ord.TrackNumber, ord.Entry, ord.User.Phonenumber,
+			transID, ord.Locale, ord.InternalSignature, ord.CustomerID, ord.DeliveryService,
 			ord.ShardKey, ord.SmID, ord.OofShard, ord.DateCreated,
 		)
-		if err != nil {
-			rollErr := tx.Rollback()
-			return fmt.Errorf("Problem with execution of Add Order query: %w", errors.Join(err, rollErr))
-		}
+
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Add Order query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) AddUser(tx *sql.Tx, ctx context.Context, user user.User) error {
+func (w *SqlWorker) AddUser(ctx context.Context, user user.User) error {
 	var err error
-	query := "INSERT INTO users(phonenumber, name, zipcode, city, address_id, region, email) VALUES($1, $2, $3, $4, $5, $6, $7)"
-	if tx == nil {
+	query := "INSERT INTO users(phonenumber, name, email, address_id) VALUES($1, $2, $3, $4)"
+	if w.TX == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, user.Phonenumber,
-			user.Name, user.Zipcode,
-			user.City, user.Address, user.Region, user.Email,
+			user.Name, user.Email, user.AddressID,
 		)
-		if err != nil {
-			return fmt.Errorf("Problem with execution of Add User query: %w", err)
-		}
 	} else {
-		_, err = tx.ExecContext(
+		_, err = w.DB.ExecContext(
 			ctx, query, user.Phonenumber,
-			user.Name, user.Zipcode,
-			user.City, user.Address, user.Region, user.Email,
+			user.Name, user.Email, user.AddressID,
 		)
+
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Add User query: %w", errors.Join(err, rollErr))
+	}
+	return nil
+}
+
+func (w *SqlWorker) AddAddress(ctx context.Context, add *user.Address) (int64, error) {
+	filename := "add_address.sql"
+	query, err := ReadQuery(filename)
+	if err != nil {
+		return -1, fmt.Errorf("Problem with reading query '%s': %w", filename, err)
+	}
+	var r *sql.Row
+	if w.TX == nil {
+		r = w.DB.QueryRowContext(
+			ctx, query, add.Zipcode, add.City, add.Address, add.Region,
+		)
+	} else {
+		r = w.TX.QueryRowContext(
+			ctx, query, add.Zipcode, add.City, add.Address, add.Region,
+		)
+	}
+	var i int64
+	err = r.Scan(&i)
+	if err != nil {
+		errRoll := w.Rollback()
+		return -1, fmt.Errorf("Problem with getting id of insert row: %w", errors.Join(err, errRoll))
+	}
+	return i, nil
+}
+
+func (w *SqlWorker) AddItems(ctx context.Context, items []item.Item) error {
+	for _, item := range items {
+		err := w.AddItem(ctx, &item)
 		if err != nil {
-			rollErr := tx.Rollback()
-			return fmt.Errorf("Problem with execution of Add User query: %w", errors.Join(err, rollErr))
+			return fmt.Errorf("Problem with execution of Add Item query: %w", err)
 		}
 	}
 	return nil
 }
 
-// func (w *SqlWorker) AddItems(tx *sql.Tx, ctx context.Context, user user.User) error {
-
-// }
-
-func (w *SqlWorker) AddItem() {
-
+func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
+	var err error
+	query := "INSERT INTO items(chrt_id, track_number, price, rid, name, sale," +
+		"size, total_price, nm_id, brand, order_id) VALUES($1, $2, $3, $4, " +
+		"$5, $6, $7, $8, $9, $10, $11)"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query,
+			item.ChrtID, item.TrackNumber, item.Price, item.RID, item.Name,
+			item.Sale, item.Size, item.TotalPrice, item.NmID, item.Brand,
+			item.OrderID,
+		)
+	} else {
+		_, err = w.DB.ExecContext(
+			ctx, query,
+			item.ChrtID, item.TrackNumber, item.Price, item.RID, item.Name,
+			item.Sale, item.Size, item.TotalPrice, item.NmID, item.Brand,
+			item.OrderID,
+		)
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Add Item query: %w", errors.Join(err, rollErr))
+	}
+	return nil
 }
 
-func (w *SqlWorker) AddPaymentInfo() {
+func (w *SqlWorker) CreateTx() error {
+	tx, err := w.DB.Begin()
+	if err != nil {
+		return err
+	}
+	if w.TX != nil {
+		errRoll := w.TX.Rollback()
+		if errRoll != nil {
+			return errRoll
+		}
+	}
+	w.TX = tx
+	return nil
+}
 
+func (w *SqlWorker) AddPaymentInfo(ctx context.Context, pay *payment.Payment) error {
+	var err error
+	query := "INSERT INTO payments(transaction_id, request_id, currency, provider_id, amount, payment_dt," +
+		"bank, delivery_cost, goods_total, custom_fee) VALUES($1, $2, $3, $4, $5, TO_TIMESTAMP($6), $7, $8, $9, $10)"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, pay.TransactionID, pay.RequestID, pay.Currency, pay.ProviderID,
+			pay.Amount, pay.PaymentDateTime, pay.Bank, pay.DeliveryCost, pay.GoodsTotal,
+			pay.CustomFee,
+		)
+	} else {
+		_, err = w.TX.ExecContext(
+			ctx, query, pay.TransactionID, pay.RequestID, pay.Currency, pay.ProviderID,
+			pay.Amount, pay.PaymentDateTime, pay.Bank, pay.DeliveryCost, pay.GoodsTotal,
+			pay.CustomFee,
+		)
+
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Add PaymentInfo query: %w", errors.Join(err, rollErr))
+	}
+	return nil
 }
 
 func InitDB() (*sql.DB, error) {
@@ -117,27 +216,35 @@ func InitDB() (*sql.DB, error) {
 	return DB, nil
 }
 
-func CreateDefaultTables(db *sql.DB) error {
+func ReadQuery(filename string) (string, error) {
 	d, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("Problem with get pwd: %w", err)
+		return "", fmt.Errorf("Problem with get pwd: %w", err)
 	}
-	filename := "init.sql"
 	filePath := filepath.Join(
 		d,
 		"internal", "storage", "postgres",
-		"resources", filename,
+		"queries", filename,
 	)
 	f, err := os.OpenFile(filePath, os.O_RDONLY, 0000)
 	if err != nil {
-		return fmt.Errorf("Problem with opening '%s' file: %w", filename, err)
+		return "", fmt.Errorf("Problem with opening '%s' file: %w", filename, err)
 	}
 	b, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("Problem with reading '%s' file: %w", filename, err)
+		return "", fmt.Errorf("Problem with reading '%s' file: %w", filename, err)
+	}
+	return string(b), nil
+}
+
+func CreateDefaultTables(db *sql.DB) error {
+	filename := "init.sql"
+	query, err := ReadQuery(filename)
+	if err != nil {
+		return fmt.Errorf("Problem with reading of '%s' query: %w", filename, err)
 	}
 	_, err = db.Exec(
-		string(b),
+		query,
 	)
 	if err != nil {
 		return fmt.Errorf("Problem with execution of init query: %w", err)

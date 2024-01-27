@@ -11,5 +11,4 @@ type Payment struct {
 	DeliveryCost    float64 `json:"delivery_cost"`
 	GoodsTotal      float64 `json:"goods_total"`
 	CustomFee       float64 `json:"custom_fee"`
-	OrderID         string  `json:"order_id,omitempty"`
 }
