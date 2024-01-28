@@ -49,15 +49,19 @@ func main() {
 		return
 	}
 	i := int64(0)
-	ord.User.Address.City += " 3_O"
+	ord.User.Address.City += " 5_O"
 	for {
 		b := strconv.FormatInt(i, 10)
 		ord.OrderID = Replace(ord.OrderID, b)
+		fmt.Println("Sending of", ord.OrderID)
 		ord.User.Phonenumber = Replace(ord.User.Phonenumber, b)
 		ord.User.Email = Replace(ord.User.Email, b)
 		ord.TrackNumber = Replace(ord.TrackNumber, b)
 		ord.PaymentInfo.TransactionID = Replace(ord.PaymentInfo.TransactionID, b)
 		ord.PaymentInfo.RequestID = Replace(ord.PaymentInfo.RequestID, b)
+		for idx := range ord.Items {
+			ord.Items[idx].ChrtID += 1
+		}
 		d, err := json.Marshal(ord)
 		if err != nil {
 			fmt.Println("Problem with json data: " + err.Error())

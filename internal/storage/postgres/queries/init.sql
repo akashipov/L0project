@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     phonenumber VARCHAR(13) UNIQUE PRIMARY KEY,
     name VARCHAR(50) NOT NULL,
     email VARCHAR(50) UNIQUE,
-    address_id SERIAL,
+    address_id INTEGER,
     CONSTRAINT fk_address FOREIGN KEY(address_id) REFERENCES addresses(id)
 );
 
