@@ -85,3 +85,8 @@ END IF;
 RETURN founded_id;
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS history (
+    order_id VARCHAR(50) PRIMARY KEY,
+    triggered_at TIMESTAMPTZ
+);

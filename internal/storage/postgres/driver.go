@@ -84,6 +84,26 @@ func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
 	return nil
 }
 
+func (w *SqlWorker) AddOrderHistory(ctx context.Context, order_id string, t int64) error {
+	var err error
+	query := "INSERT INTO history(order_id, triggered_at) VALUES($1, TO_TIMESTAMP($2)) ON CONFLICT (order_id) DO UPDATE SET triggered_at = TO_TIMESTAMP($2)"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, order_id, t,
+		)
+	} else {
+		_, err = w.TX.ExecContext(
+			ctx, query, order_id, t,
+		)
+
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Add History Order query: %w", errors.Join(err, rollErr))
+	}
+	return nil
+}
+
 func (w *SqlWorker) AddUser(ctx context.Context, user user.User) error {
 	var err error
 	query := "INSERT INTO users(phonenumber, name, email, address_id) VALUES($1, $2, $3, $4)"

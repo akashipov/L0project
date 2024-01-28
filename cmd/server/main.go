@@ -11,6 +11,7 @@ import (
 
 	"github.com/akashipov/L0project/internal/arguments"
 	"github.com/akashipov/L0project/internal/handlers"
+	"github.com/akashipov/L0project/internal/storage"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
@@ -43,6 +44,7 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
+	storage.InitCache()
 	_, err = postgres.NewSqlWorker()
 	if err != nil {
 		fmt.Println(err.Error())
