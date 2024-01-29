@@ -1,4 +1,4 @@
-package storage
+package cache
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/akashipov/L0project/internal/arguments"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
@@ -14,7 +15,7 @@ import (
 var LRUCache *expirable.LRU[string, []byte]
 
 func InitCache(ctx context.Context) {
-	LRUCache = expirable.NewLRU[string, []byte](5, nil, time.Second*5)
+	LRUCache = expirable.NewLRU[string, []byte](arguments.CacheSize, nil, time.Second*time.Duration(arguments.CacheTimeLimitSecs))
 	ids, err := postgres.DBWorker.GetHistoryInterval(ctx)
 	if err != nil {
 		fmt.Println("Problem with initialization of cache from Psql db:", err.Error())

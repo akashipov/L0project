@@ -256,15 +256,15 @@ func (w *SqlWorker) CreateTx() error {
 
 func (w *SqlWorker) GetHistoryInterval(ctx context.Context) ([]string, error) {
 	var err error
-	query := "SELECT order_id FROM history ORDER BY triggered_at DESC LIMIT 5"
+	query := "SELECT order_id FROM history ORDER BY triggered_at DESC LIMIT $1"
 	var rows *sql.Rows
 	if w.TX == nil {
 		rows, err = w.DB.QueryContext(
-			ctx, query,
+			ctx, query, arguments.CacheSize,
 		)
 	} else {
 		rows, err = w.TX.QueryContext(
-			ctx, query,
+			ctx, query, arguments.CacheSize,
 		)
 	}
 	if err != nil {

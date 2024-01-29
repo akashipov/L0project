@@ -11,7 +11,7 @@ import (
 	customerrors "github.com/akashipov/L0project/internal/errors"
 	"github.com/akashipov/L0project/internal/pkg/middleware/compress"
 	"github.com/akashipov/L0project/internal/pkg/middleware/logger"
-	"github.com/akashipov/L0project/internal/storage"
+	"github.com/akashipov/L0project/internal/storage/cache"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -43,9 +43,9 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	id := chi.URLParam(request, "id")
 	t := time.Now().Unix()
 	ctx := context.Background()
-	v, ok := storage.LRUCache.Get(id)
+	v, ok := cache.LRUCache.Get(id)
 	if ok {
-		storage.LRUCache.Add(id, v)
+		cache.LRUCache.Add(id, v)
 		fmt.Println("Returned cached result")
 		w.Write(v)
 		err := postgres.DBWorker.AddOrderHistory(ctx, id, t)
@@ -68,7 +68,7 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 		cErr.ReportError(w)
 		return
 	}
-	storage.LRUCache.Add(id, data)
+	cache.LRUCache.Add(id, data)
 	w.Write(data)
 	err = postgres.DBWorker.AddOrderHistory(ctx, id, t)
 	if err != nil {
