@@ -49,7 +49,7 @@ func main() {
 		return
 	}
 	i := int64(0)
-	ord.User.Address.City += " 5_O"
+	ord.User.Address.City += "new1"
 	for {
 		b := strconv.FormatInt(i, 10)
 		ord.OrderID = Replace(ord.OrderID, b)

@@ -163,20 +163,18 @@ func (w *SqlWorker) AddItems(ctx context.Context, items []item.Item) error {
 
 func (w *SqlWorker) AddData(ctx context.Context, data []byte) {
 	var ord order.Order
-	fmt.Printf("Received a message\n")
-	err := json.Unmarshal(data, &ord)
+	err := w.CreateTx()
+	if err != nil {
+		w.TX = nil
+		fmt.Println(err.Error())
+		return
+	}
+	err = json.Unmarshal(data, &ord)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
 	addressID, err := w.AddAddress(ctx, &ord.User.Address)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	fmt.Printf("Adress ID '%d' was added\n", addressID)
-
-	err = w.CreateTx()
 	if err != nil {
 		fmt.Println(err.Error())
 		return

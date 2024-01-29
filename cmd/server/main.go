@@ -63,6 +63,7 @@ func main() {
 		return
 	}
 	sc.Subscribe("foo", func(m *nats.Msg) {
+		fmt.Printf("Received a message\n")
 		postgres.DBWorker.AddData(ctx, m.Data)
 	})
 	log, err := GetLogger()
