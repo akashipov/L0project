@@ -46,7 +46,7 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	v, ok := storage.LRUCache.Get(id)
 	if ok {
 		storage.LRUCache.Add(id, v)
-		fmt.Println("Returned cached result:", string(v))
+		fmt.Println("Returned cached result")
 		w.Write(v)
 		err := postgres.DBWorker.AddOrderHistory(ctx, id, t)
 		if err != nil {
@@ -54,51 +54,11 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 		}
 		return
 	}
-	err := postgres.DBWorker.CreateTx()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Couldn't create TX"))
-		return
-	}
-	fmt.Printf("ID '%s' is processing...\n", id)
-	ord, cErr := postgres.DBWorker.GetOrderByID(ctx, id)
+	ord, cErr := postgres.DBWorker.GetDataByID(ctx, id)
 	if cErr != nil {
 		cErr.ReportError(w)
 		return
 	}
-	usr, cErr := postgres.DBWorker.GetUserByPhone(ctx, ord.User.Phonenumber)
-	if cErr != nil {
-		cErr.ReportError(w)
-		return
-	}
-	itms, cErr := postgres.DBWorker.GetItemsByOrderID(ctx, ord.OrderID)
-	if cErr != nil {
-		cErr.ReportError(w)
-		return
-	}
-	payInfo, cErr := postgres.DBWorker.GetPaymentByID(ctx, ord.PaymentInfo.TransactionID)
-	if cErr != nil {
-		cErr.ReportError(w)
-		return
-	}
-	addr, cErr := postgres.DBWorker.GetAddressByID(ctx, usr.AddressID)
-	if cErr != nil {
-		cErr.ReportError(w)
-		return
-	}
-	err = postgres.DBWorker.TX.Commit()
-	if err != nil {
-		cErr = &customerrors.CustomError{
-			Message: err.Error(),
-			Status:  http.StatusInternalServerError,
-		}
-		return
-	}
-	postgres.DBWorker.TX = nil
-	usr.Address = *addr
-	ord.User = usr
-	ord.PaymentInfo = payInfo
-	ord.Items = itms
 	data, err := json.MarshalIndent(ord, "", "    ")
 	if err != nil {
 		cErr = &customerrors.CustomError{

@@ -256,6 +256,42 @@ func (w *SqlWorker) CreateTx() error {
 	return nil
 }
 
+func (w *SqlWorker) GetHistoryInterval(ctx context.Context) ([]string, error) {
+	var err error
+	query := "SELECT order_id FROM history ORDER BY triggered_at DESC LIMIT 5"
+	var rows *sql.Rows
+	if w.TX == nil {
+		rows, err = w.DB.QueryContext(
+			ctx, query,
+		)
+	} else {
+		rows, err = w.TX.QueryContext(
+			ctx, query,
+		)
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return nil, fmt.Errorf("Problem with execution of Add History Order query: %w", errors.Join(err, rollErr))
+	}
+	defer rows.Close()
+	ids := make([]string, 0, 5)
+	for rows.Next() {
+		var id string
+		err = rows.Scan(&id)
+		if err != nil {
+			rollErr := w.Rollback()
+			err = fmt.Errorf("Problem with Scan Id history block: %w", errors.Join(rollErr, err))
+			break
+		}
+		ids = append(ids, id)
+	}
+	err = errors.Join(err, rows.Err())
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 func (w *SqlWorker) AddPaymentInfo(ctx context.Context, pay *payment.Payment) error {
 	var err error
 	query := "INSERT INTO payments(transaction_id, request_id, currency, provider_id, amount, payment_dt," +
@@ -434,16 +470,17 @@ func (w *SqlWorker) GetItemsByOrderID(ctx context.Context, orderID string) ([]it
 }
 
 func InitDB() (*sql.DB, error) {
+	dbname := "l0_data"
 	DB, err := sql.Open(
 		"postgres",
-		fmt.Sprintf("host=localhost port=5432 user=artemkashipov password=%s dbname=l0_data sslmode=disable", arguments.PostgresPWD),
+		fmt.Sprintf("host=localhost port=5432 user=artemkashipov password=%s dbname=%s sslmode=disable", arguments.PostgresPWD, dbname),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("Problem with opening DB: %w", err)
+		return nil, fmt.Errorf("Problem with opening DB - '%s': %w", dbname, err)
 	}
 	err = DB.Ping()
 	if err != nil {
-		return nil, fmt.Errorf("Problem with pinging of DB: %w", err)
+		return nil, fmt.Errorf("Problem with pinging DB - '%s': %w", dbname, err)
 	}
 	return DB, nil
 }
@@ -479,7 +516,53 @@ func (w *SqlWorker) CreateDefaultTables() error {
 		query,
 	)
 	if err != nil {
-		return fmt.Errorf("Problem with execution of init query: %w", err)
+		return fmt.Errorf("Problem with execution of '%s' query: %w", filename, err)
 	}
 	return nil
+}
+
+func (w *SqlWorker) GetDataByID(ctx context.Context, id string) (*order.Order, *customerrors.CustomError) {
+	err := w.CreateTx()
+	if err != nil {
+		cusErr := customerrors.CustomError{
+			Message: "Couldn't create TX",
+			Status:  http.StatusInternalServerError,
+		}
+		return nil, &cusErr
+	}
+	fmt.Printf("ID '%s' is processing...\n", id)
+	ord, cErr := w.GetOrderByID(ctx, id)
+	if cErr != nil {
+		return nil, cErr
+	}
+	usr, cErr := w.GetUserByPhone(ctx, ord.User.Phonenumber)
+	if cErr != nil {
+		return nil, cErr
+	}
+	itms, cErr := w.GetItemsByOrderID(ctx, ord.OrderID)
+	if cErr != nil {
+		return nil, cErr
+	}
+	payInfo, cErr := w.GetPaymentByID(ctx, ord.PaymentInfo.TransactionID)
+	if cErr != nil {
+		return nil, cErr
+	}
+	addr, cErr := w.GetAddressByID(ctx, usr.AddressID)
+	if cErr != nil {
+		return nil, cErr
+	}
+	err = w.TX.Commit()
+	if err != nil {
+		cErr = &customerrors.CustomError{
+			Message: err.Error(),
+			Status:  http.StatusInternalServerError,
+		}
+		return nil, cErr
+	}
+	w.TX = nil
+	usr.Address = *addr
+	ord.User = usr
+	ord.PaymentInfo = payInfo
+	ord.Items = itms
+	return ord, nil
 }

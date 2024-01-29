@@ -44,8 +44,9 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
-	storage.InitCache()
+
 	_, err = postgres.NewSqlWorker()
+	storage.InitCache(ctx)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -55,6 +56,7 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
+
 	sc, err := nats.Connect(arguments.NatsURL)
 	if err != nil {
 		fmt.Println(err.Error())
