@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akashipov/L0project/internal/storage/order"
+	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/nats-io/nats.go"
 )
 
@@ -30,20 +29,16 @@ func main() {
 		fmt.Println(err.Error())
 		return
 	}
-	p := flag.String("f", "cmd/publisher/order.json", "Path to example of order in json format")
+	defer sc.Close()
+	p := flag.String("f", "statics/publisher/order.json", "Path to example of order in json format")
 	flag.Parse()
-	f, err := os.OpenFile(*p, os.O_RDONLY, 0000)
-	if err != nil {
-		fmt.Println(err.Error())
-		return
-	}
-	data, err := io.ReadAll(f)
+	data, err := postgres.Read(*p)
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
 	var ord order.Order
-	err = json.Unmarshal(data, &ord)
+	err = json.Unmarshal([]byte(data), &ord)
 	if err != nil {
 		fmt.Println(err.Error())
 		return

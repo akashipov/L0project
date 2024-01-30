@@ -65,7 +65,6 @@ func ParseArgsServer() error {
 	}
 	fmt.Println("Http host:", HPServer)
 	fmt.Println("Nats host:", NatsURL)
-	fmt.Println("Postgres pwd:", string(PostgresPWD[0])+"***")
 	fmt.Printf("Cache max size: %d\n", CacheSize)
 	fmt.Printf("Cache limit on time in seconds: %d\n", CacheTimeLimitSecs)
 	return nil

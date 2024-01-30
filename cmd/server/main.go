@@ -3,27 +3,25 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
 	"github.com/akashipov/L0project/internal/arguments"
-	"github.com/akashipov/L0project/internal/handlers"
-	"github.com/akashipov/L0project/internal/storage/cache"
+	"github.com/akashipov/L0project/internal/pkg/middleware/logger"
+	"github.com/akashipov/L0project/internal/server"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/nats-io/nats.go"
-	"go.uber.org/zap"
 )
 
-func GetLogger() (*zap.SugaredLogger, error) {
-	logger, err := zap.NewDevelopment()
-	if err != nil {
-		return nil, err
-	}
-	log := *logger.Sugar()
-	return &log, nil
+func SignalWorker(done chan struct{}, w *sync.WaitGroup) {
+	sigint := make(chan os.Signal, 1)
+	signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigint
+	fmt.Printf("\nSignal: %v\n", sig)
+	done <- struct{}{}
+	w.Done()
 }
 
 func main() {
@@ -31,23 +29,15 @@ func main() {
 	ctx := context.Background()
 	var w sync.WaitGroup
 	w.Add(1)
-	go func() {
-		sigint := make(chan os.Signal, 1)
-		signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-sigint
-		fmt.Printf("\nSignal: %v\n", sig)
-		done <- struct{}{}
-		w.Done()
-	}()
+	go SignalWorker(done, &w)
 	err := arguments.ParseArgsServer()
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
 
-	_, err = postgres.NewSqlWorker()
 	// Load cache from psql db to local memory
-	cache.InitCache(ctx)
+	_, err = postgres.NewSqlWorker()
 	if err != nil {
 		fmt.Println(err.Error())
 		return
@@ -65,16 +55,24 @@ func main() {
 	}
 	sc.Subscribe("foo", func(m *nats.Msg) {
 		fmt.Printf("Received a message\n")
-		postgres.DBWorker.AddData(ctx, m.Data)
+		err := postgres.DBWorker.AddData(ctx, m.Data)
+		if err != nil {
+			fmt.Println("Some error with adding data: " + err.Error())
+		}
 	})
-	log, err := GetLogger()
+
+	log, err := logger.GetLogger()
 	if err != nil {
 		fmt.Println("Log creation problem " + err.Error())
 		return
 	}
-	srv := &http.Server{Addr: arguments.HPServer, Handler: handlers.ServerRouter(log)}
+	srv, err := server.NewServer(ctx, *log)
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
 	w.Add(1)
-	go handlers.RunServer(srv, done, &w)
+	go srv.RunServer(done, &w)
 	w.Wait()
 	sc.Close()
 	fmt.Println("Subscription was closed!")

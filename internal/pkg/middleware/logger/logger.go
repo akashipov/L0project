@@ -58,3 +58,12 @@ func WithLogging(h http.Handler, s *zap.SugaredLogger) func(w http.ResponseWrite
 	}
 	return logFn
 }
+
+func GetLogger() (*zap.SugaredLogger, error) {
+	logger, err := zap.NewDevelopment()
+	if err != nil {
+		return nil, err
+	}
+	log := *logger.Sugar()
+	return &log, nil
+}

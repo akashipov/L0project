@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	customerrors "github.com/akashipov/L0project/internal/errors"
@@ -16,19 +15,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
-
-func RunServer(srv *http.Server, done chan struct{}, w *sync.WaitGroup) {
-	w.Add(1)
-	go func() {
-		srv.ListenAndServe()
-		fmt.Println("Server is stopped")
-		w.Done()
-	}()
-	<-done
-	fmt.Println("Server is stopping...")
-	srv.Close()
-	w.Done()
-}
 
 func ServerRouter(log *zap.SugaredLogger) http.Handler {
 	r := chi.NewRouter()
@@ -45,13 +31,12 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	ctx := context.Background()
 	v, ok := cache.LRUCache.Get(id)
 	if ok {
-		cache.LRUCache.Add(id, v)
-		fmt.Println("Returned cached result")
-		w.Write(v)
 		err := postgres.DBWorker.AddOrderHistory(ctx, id, t)
 		if err != nil {
-			fmt.Println(err.Error())
+			fmt.Println("Problem with using of cache: " + err.Error())
 		}
+		cache.LRUCache.Add(id, v)
+		w.Write(v)
 		return
 	}
 	ord, cErr := postgres.DBWorker.GetDataByID(ctx, id)
@@ -72,6 +57,6 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	w.Write(data)
 	err = postgres.DBWorker.AddOrderHistory(ctx, id, t)
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Println("Problem with filling of cache: " + err.Error())
 	}
 }

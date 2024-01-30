@@ -10,16 +10,35 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/akashipov/L0project/internal/arguments"
 	customerrors "github.com/akashipov/L0project/internal/errors"
+	"github.com/akashipov/L0project/internal/pkg/middleware/logger"
 	"github.com/akashipov/L0project/internal/storage/item"
 	"github.com/akashipov/L0project/internal/storage/order"
 	"github.com/akashipov/L0project/internal/storage/payment"
 	"github.com/akashipov/L0project/internal/storage/user"
 	_ "github.com/lib/pq"
+	"go.uber.org/zap"
 )
+
+var o *sync.Once
+var Log *zap.SugaredLogger
+
+func Start() {
+	if o == nil {
+		o = &sync.Once{}
+	}
+	o.Do(func() {
+		arguments.ParseArgsServer()
+		arguments.HPServer = "0.0.0.0:8000"
+		arguments.PostgresPWD = "620631"
+		Log, _ = logger.GetLogger()
+		NewSqlWorker()
+	})
+}
 
 type SqlWorker struct {
 	DB *sql.DB
@@ -106,7 +125,7 @@ func (w *SqlWorker) AddOrderHistory(ctx context.Context, order_id string, t int6
 
 func (w *SqlWorker) AddUser(ctx context.Context, user user.User) error {
 	var err error
-	query := "INSERT INTO users(phonenumber, name, email, address_id) VALUES($1, $2, $3, $4)"
+	query := "INSERT INTO users(phonenumber, name, email, address_id) VALUES($1, $2, $3, $4) ON CONFLICT (phonenumber) DO UPDATE SET phonenumber = $1, name = $2, email = $3, address_id=$4"
 	if w.TX == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, user.Phonenumber,
@@ -128,7 +147,11 @@ func (w *SqlWorker) AddUser(ctx context.Context, user user.User) error {
 
 func (w *SqlWorker) AddAddress(ctx context.Context, add *user.Address) (int64, error) {
 	filename := "add_address.sql"
-	query, err := ReadQuery(filename)
+	path := filepath.Join(
+		"statics",
+		"queries", filename,
+	)
+	query, err := Read(path)
 	if err != nil {
 		return -1, fmt.Errorf("Problem with reading query '%s': %w", filename, err)
 	}
@@ -161,54 +184,136 @@ func (w *SqlWorker) AddItems(ctx context.Context, items []item.Item) error {
 	return nil
 }
 
-func (w *SqlWorker) AddData(ctx context.Context, data []byte) {
+func (w *SqlWorker) AddData(ctx context.Context, data []byte) error {
 	var ord order.Order
 	err := w.CreateTx()
 	if err != nil {
 		w.TX = nil
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	err = json.Unmarshal(data, &ord)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	addressID, err := w.AddAddress(ctx, &ord.User.Address)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	ord.User.AddressID = addressID
 	err = w.AddUser(ctx, *ord.User)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	err = w.AddPaymentInfo(ctx, ord.PaymentInfo)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	err = w.AddOrder(ctx, ord)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	for idx := range ord.Items {
 		ord.Items[idx].OrderID = ord.OrderID
 	}
 	err = w.AddItems(ctx, ord.Items)
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	err = w.TX.Commit()
 	if err != nil {
-		fmt.Println(err.Error())
-		return
+		return err
 	}
 	w.TX = nil
+	fmt.Printf("Order with '%s' was added successfully\n", ord.OrderID)
+	return nil
+}
+
+func (w *SqlWorker) DeleteDataByOrderID(ctx context.Context, data []byte) error {
+	var ord order.Order
+	err := w.CreateTx()
+	if err != nil {
+		w.TX = nil
+		return err
+	}
+	err = json.Unmarshal(data, &ord)
+	if err != nil {
+		return err
+	}
+	err = w.DeleteItemsByOrderID(ctx, ord.OrderID)
+	if err != nil {
+		return err
+	}
+	err = w.DeleteOrderByID(ctx, ord.OrderID)
+	if err != nil {
+		return err
+	}
+	err = w.DeletePaymentByID(ctx, ord.PaymentInfo.TransactionID)
+	if err != nil {
+		return err
+	}
+	err = w.TX.Commit()
+	if err != nil {
+		return err
+	}
+	w.TX = nil
+	return nil
+}
+
+func (w *SqlWorker) DeleteOrderByID(ctx context.Context, orderID string) error {
+	var err error
+	query := "DELETE FROM orders WHERE order_id = $1"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, orderID,
+		)
+	} else {
+		_, err = w.TX.ExecContext(
+			ctx, query, orderID,
+		)
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Delete Order By ID: %w", errors.Join(err, rollErr))
+	}
+	return nil
+}
+
+func (w *SqlWorker) DeletePaymentByID(ctx context.Context, paymentID string) error {
+	var err error
+	query := "DELETE FROM payments WHERE transaction_id = $1"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, paymentID,
+		)
+	} else {
+		_, err = w.TX.ExecContext(
+			ctx, query, paymentID,
+		)
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Delete Payment By ID: %w", errors.Join(err, rollErr))
+	}
+	return nil
+}
+
+func (w *SqlWorker) DeleteItemsByOrderID(ctx context.Context, orderID string) error {
+	var err error
+	query := "DELETE FROM items WHERE order_id = $1"
+	if w.TX == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, orderID,
+		)
+	} else {
+		_, err = w.TX.ExecContext(
+			ctx, query, orderID,
+		)
+	}
+	if err != nil {
+		rollErr := w.Rollback()
+		return fmt.Errorf("Problem with execution of Delete Items By Order ID: %w", errors.Join(err, rollErr))
+	}
+	return nil
 }
 
 func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
@@ -216,7 +321,6 @@ func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
 	query := "INSERT INTO items(chrt_id, track_number, price, rid, name, sale," +
 		"size, total_price, nm_id, brand, order_id) VALUES($1, $2, $3, $4, " +
 		"$5, $6, $7, $8, $9, $10, $11)"
-	fmt.Printf("Adding item id: %d to order with ID - %s\n", item.ChrtID, item.OrderID)
 	if w.TX == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query,
@@ -483,30 +587,29 @@ func InitDB() (*sql.DB, error) {
 	return DB, nil
 }
 
-func ReadQuery(filename string) (string, error) {
-	d, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("Problem with get pwd: %w", err)
-	}
+func Read(path string) (string, error) {
+	basepath := os.Getenv("PROJECT_DIR")
 	filePath := filepath.Join(
-		d,
-		"internal", "storage", "postgres",
-		"queries", filename,
+		basepath,
+		path,
 	)
 	f, err := os.OpenFile(filePath, os.O_RDONLY, 0000)
 	if err != nil {
-		return "", fmt.Errorf("Problem with opening '%s' file: %w", filename, err)
+		return "", fmt.Errorf("Problem with opening '%s' file: %w", filePath, err)
 	}
 	b, err := io.ReadAll(f)
 	if err != nil {
-		return "", fmt.Errorf("Problem with reading '%s' file: %w", filename, err)
+		return "", fmt.Errorf("Problem with reading '%s' file: %w", filePath, err)
 	}
 	return string(b), nil
 }
 
 func (w *SqlWorker) CreateDefaultTables() error {
 	filename := "init.sql"
-	query, err := ReadQuery(filename)
+	path := filepath.Join(
+		"statics", "queries", filename,
+	)
+	query, err := Read(path)
 	if err != nil {
 		return fmt.Errorf("Problem with reading of '%s' query: %w", filename, err)
 	}
