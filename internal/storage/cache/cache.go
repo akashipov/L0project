@@ -16,7 +16,11 @@ var LRUCache *expirable.LRU[string, []byte]
 
 func InitCache(ctx context.Context, log *zap.SugaredLogger) {
 	LRUCache = expirable.NewLRU[string, []byte](arguments.CacheSize, nil, time.Second*time.Duration(arguments.CacheTimeLimitSecs))
-	ids, err := postgres.DBWorker.GetHistoryInterval(ctx)
+	tx, err := postgres.DBWorker.CreateTx()
+	if err != nil {
+		log.Infof("Problem with getting tx:", err.Error())
+	}
+	ids, err := postgres.DBWorker.GetHistoryInterval(ctx, tx)
 	if err != nil {
 		log.Infof("Problem with initialization of cache from Psql db:", err.Error())
 	}
@@ -37,5 +41,4 @@ func InitCache(ctx context.Context, log *zap.SugaredLogger) {
 		log.Infof("Problem with some ids:", err.Error())
 	}
 	log.Infof("LRU cache created!")
-	// fmt.Println("Values:", LRUCache.Values())
 }

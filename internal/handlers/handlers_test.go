@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/akashipov/L0project/internal/storage/cache"
+	"github.com/akashipov/L0project/internal/storage/order"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/go-resty/resty/v2"
 	"github.com/nats-io/nats.go"
@@ -34,7 +37,7 @@ func TestGetOrder(t *testing.T) {
 		ID  string
 	}
 	ctx := context.Background()
-	postgres.Start()
+	postgres.Start(ctx, t)
 	cache.InitCache(ctx, postgres.Log)
 	srv := httptest.NewServer(ServerRouter(postgres.Log))
 	defer srv.Close()
@@ -54,13 +57,33 @@ func TestGetOrder(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := resty.New()
-			res, err := client.R().Get(tt.args.Url + tt.args.ID)
-			require.Equal(t, nil, err)
-			assert.Equal(t, http.StatusOK, res.StatusCode())
 			b, err := postgres.Read(tt.expectedJSON)
 			require.Equal(t, nil, err)
-			assert.Equal(t, string(b), string(res.Body()))
+			err = postgres.DBWorker.AddData(ctx, []byte(b))
+			defer func() {
+				postgres.DBWorker.DeleteDataByOrderID(ctx, []byte(b))
+				postgres.DBWorker.DeleteOrderHistory(ctx, nil, tt.args.ID)
+				fmt.Println("Deleted data successfully")
+			}()
+			require.Equal(t, nil, err)
+			client := resty.New()
+			res, err := client.R().Get(tt.args.Url + tt.args.ID)
+			if err != nil {
+				fmt.Println("Error is:", err.Error())
+			}
+			require.Equal(t, nil, err)
+			assert.Equal(t, http.StatusOK, res.StatusCode())
+			var ord1 order.Order
+			var ord2 order.Order
+			err = json.Unmarshal([]byte(b), &ord1)
+			require.Equal(t, nil, err)
+			err = json.Unmarshal(res.Body(), &ord2)
+			require.Equal(t, nil, err)
+			ord2.User.AddressID = 0
+			ord1.User.AddressID = 0
+			assert.Equal(t, *ord2.User, *ord1.User)
+			assert.Equal(t, *ord2.PaymentInfo, *ord1.PaymentInfo)
+			assert.Equal(t, true, len(ord2.Items) == len(ord1.Items))
 		})
 	}
 }

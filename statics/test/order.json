@@ -1,28 +1,19 @@
 {
-    "order_uid": "b563feb7b2b84b6t428",
+    "order_uid": "b563feb7b2b84b6test",
+    "track_number": "WBILMTESTTRACK",
     "entry": "WBIL",
-    "track_number": "WBILMTESTTR428",
-    "locale": "en",
-    "internal_signature": "",
-    "customer_id": "test",
-    "delivery_service": "meest",
-    "shardkey": "9",
-    "sm_id": 99,
-    "date_created": "2021-11-26T06:22:19Z",
-    "oof_shard": "1",
     "delivery": {
         "name": "Test Testov",
-        "phone": "+9720000428",
-        "email": "test@gmail.428",
+        "phone": "+9720000000",
         "zip": "2639809",
-        "city": "Kiryat Mozkinnew1",
+        "city": "Kiryat Mozkin",
         "address": "Ploshad Mira 15",
         "region": "Kraiot",
-        "address_id": 2
+        "email": "test@gmail.com"
     },
     "payment": {
-        "transaction": "b563feb7b2b84b6t428",
-        "request_id": "428",
+        "transaction": "b563feb7b2b84b6test",
+        "request_id": "",
         "currency": "USD",
         "provider": "wbpay",
         "amount": 1817,
@@ -34,7 +25,7 @@
     },
     "items": [
         {
-            "chrt_id": 9935359,
+            "chrt_id": 9934930,
             "track_number": "WBILMTESTTRACK",
             "price": 453,
             "rid": "ab4219087a764ae0btest",
@@ -44,8 +35,15 @@
             "total_price": 317,
             "nm_id": 2389212,
             "brand": "Vivienne Sabo",
-            "status": 0,
-            "order_id": "b563feb7b2b84b6t428"
+            "status": 202
         }
-    ]
+    ],
+    "locale": "en",
+    "internal_signature": "",
+    "customer_id": "test",
+    "delivery_service": "meest",
+    "shardkey": "9",
+    "sm_id": 99,
+    "date_created": "2021-11-26T06:22:19Z",
+    "oof_shard": "1"
 }

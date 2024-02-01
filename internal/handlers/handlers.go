@@ -31,7 +31,7 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	ctx := context.Background()
 	v, ok := cache.LRUCache.Get(id)
 	if ok {
-		err := postgres.DBWorker.AddOrderHistory(ctx, id, t)
+		err := postgres.DBWorker.AddOrderHistory(ctx, nil, id, t)
 		if err != nil {
 			fmt.Println("Problem with using of cache: " + err.Error())
 		}
@@ -55,7 +55,7 @@ func GetOrder(w http.ResponseWriter, request *http.Request) {
 	}
 	cache.LRUCache.Add(id, data)
 	w.Write(data)
-	err = postgres.DBWorker.AddOrderHistory(ctx, id, t)
+	err = postgres.DBWorker.AddOrderHistory(ctx, nil, id, t)
 	if err != nil {
 		fmt.Println("Problem with filling of cache: " + err.Error())
 	}

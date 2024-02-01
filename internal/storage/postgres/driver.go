@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/akashipov/L0project/internal/arguments"
@@ -21,13 +22,14 @@ import (
 	"github.com/akashipov/L0project/internal/storage/payment"
 	"github.com/akashipov/L0project/internal/storage/user"
 	_ "github.com/lib/pq"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
 var o *sync.Once
 var Log *zap.SugaredLogger
 
-func Start() {
+func Start(ctx context.Context, t *testing.T) {
 	if o == nil {
 		o = &sync.Once{}
 	}
@@ -35,26 +37,16 @@ func Start() {
 		arguments.ParseArgsServer()
 		arguments.HPServer = "0.0.0.0:8000"
 		arguments.PostgresPWD = "620631"
-		Log, _ = logger.GetLogger()
-		NewSqlWorker()
+		var err error
+		Log, err = logger.GetLogger()
+		require.Equal(t, nil, err)
+		_, err = NewSqlWorker()
+		require.Equal(t, nil, err)
 	})
 }
 
 type SqlWorker struct {
 	DB *sql.DB
-	TX *sql.Tx
-}
-
-func (w *SqlWorker) Rollback() error {
-	if w.TX != nil {
-		err := w.TX.Rollback()
-		if err != nil {
-			return err
-		}
-		w.TX = nil
-		return nil
-	}
-	return errors.New("Rollback tx is already nil")
 }
 
 var DBWorker SqlWorker
@@ -68,7 +60,7 @@ func NewSqlWorker() (*SqlWorker, error) {
 	return &DBWorker, nil
 }
 
-func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
+func (w *SqlWorker) AddOrder(ctx context.Context, tx *sql.Tx, ord order.Order) error {
 	var err error
 	query := "INSERT INTO orders(order_id, track_number, entry, delivery_user, " +
 		"transaction_id, locale, internal_signature, customer_id, delivery_service, shardkey," +
@@ -80,7 +72,7 @@ func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
 	} else {
 		transID.String = ord.PaymentInfo.TransactionID
 	}
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, ord.OrderID,
 			ord.TrackNumber, ord.Entry, ord.User.Phonenumber,
@@ -88,7 +80,7 @@ func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
 			ord.ShardKey, ord.SmID, ord.OofShard, ord.DateCreated,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, ord.OrderID,
 			ord.TrackNumber, ord.Entry, ord.User.Phonenumber,
 			transID, ord.Locale, ord.InternalSignature, ord.CustomerID, ord.DeliveryService,
@@ -97,55 +89,74 @@ func (w *SqlWorker) AddOrder(ctx context.Context, ord order.Order) error {
 
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Add Order query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) AddOrderHistory(ctx context.Context, order_id string, t int64) error {
+func (w *SqlWorker) AddOrderHistory(ctx context.Context, tx *sql.Tx, order_id string, t int64) error {
 	var err error
 	query := "INSERT INTO history(order_id, triggered_at) VALUES($1, TO_TIMESTAMP($2)) ON CONFLICT (order_id) DO UPDATE SET triggered_at = TO_TIMESTAMP($2)"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, order_id, t,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, order_id, t,
 		)
 
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Add History Order query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) AddUser(ctx context.Context, user user.User) error {
+func (w *SqlWorker) DeleteOrderHistory(ctx context.Context, tx *sql.Tx, order_id string) error {
+	var err error
+	query := "DELETE FROM history WHERE order_id = $1"
+	if tx == nil {
+		_, err = w.DB.ExecContext(
+			ctx, query, order_id,
+		)
+	} else {
+		_, err = tx.ExecContext(
+			ctx, query, order_id,
+		)
+	}
+	if err != nil {
+		rollErr := tx.Rollback()
+		return fmt.Errorf("Problem with execution of Add History Order query: %w", errors.Join(err, rollErr))
+	}
+	return nil
+}
+
+func (w *SqlWorker) AddUser(ctx context.Context, tx *sql.Tx, user user.User) error {
 	var err error
 	query := "INSERT INTO users(phonenumber, name, email, address_id) VALUES($1, $2, $3, $4) ON CONFLICT (phonenumber) DO UPDATE SET phonenumber = $1, name = $2, email = $3, address_id=$4"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, user.Phonenumber,
 			user.Name, user.Email, user.AddressID,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, user.Phonenumber,
 			user.Name, user.Email, user.AddressID,
 		)
 
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Add User query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) AddAddress(ctx context.Context, add *user.Address) (int64, error) {
+func (w *SqlWorker) AddAddress(ctx context.Context, tx *sql.Tx, add *user.Address) (int64, error) {
 	filename := "add_address.sql"
 	path := filepath.Join(
 		"statics",
@@ -156,27 +167,27 @@ func (w *SqlWorker) AddAddress(ctx context.Context, add *user.Address) (int64, e
 		return -1, fmt.Errorf("Problem with reading query '%s': %w", filename, err)
 	}
 	var r *sql.Row
-	if w.TX == nil {
+	if tx == nil {
 		r = w.DB.QueryRowContext(
 			ctx, query, add.Zipcode, add.City, add.Address, add.Region,
 		)
 	} else {
-		r = w.TX.QueryRowContext(
+		r = tx.QueryRowContext(
 			ctx, query, add.Zipcode, add.City, add.Address, add.Region,
 		)
 	}
 	var i int64
 	err = r.Scan(&i)
 	if err != nil {
-		errRoll := w.Rollback()
+		errRoll := tx.Rollback()
 		return -1, fmt.Errorf("Problem with getting id of insert row: %w", errors.Join(err, errRoll))
 	}
 	return i, nil
 }
 
-func (w *SqlWorker) AddItems(ctx context.Context, items []item.Item) error {
+func (w *SqlWorker) AddItems(ctx context.Context, tx *sql.Tx, items []item.Item) error {
 	for _, item := range items {
-		err := w.AddItem(ctx, &item)
+		err := w.AddItem(ctx, tx, &item)
 		if err != nil {
 			return fmt.Errorf("Problem with execution of Add Item!S query: %w", err)
 		}
@@ -186,142 +197,141 @@ func (w *SqlWorker) AddItems(ctx context.Context, items []item.Item) error {
 
 func (w *SqlWorker) AddData(ctx context.Context, data []byte) error {
 	var ord order.Order
-	err := w.CreateTx()
+	tx, err := w.CreateTx()
 	if err != nil {
-		w.TX = nil
+		tx = nil
 		return err
 	}
 	err = json.Unmarshal(data, &ord)
 	if err != nil {
 		return err
 	}
-	addressID, err := w.AddAddress(ctx, &ord.User.Address)
+	addressID, err := w.AddAddress(ctx, tx, &ord.User.Address)
 	if err != nil {
 		return err
 	}
 	ord.User.AddressID = addressID
-	err = w.AddUser(ctx, *ord.User)
+	err = w.AddUser(ctx, tx, *ord.User)
 	if err != nil {
 		return err
 	}
-	err = w.AddPaymentInfo(ctx, ord.PaymentInfo)
+	err = w.AddPaymentInfo(ctx, tx, ord.PaymentInfo)
 	if err != nil {
 		return err
 	}
-	err = w.AddOrder(ctx, ord)
+	err = w.AddOrder(ctx, tx, ord)
 	if err != nil {
 		return err
 	}
 	for idx := range ord.Items {
 		ord.Items[idx].OrderID = ord.OrderID
 	}
-	err = w.AddItems(ctx, ord.Items)
+	err = w.AddItems(ctx, tx, ord.Items)
 	if err != nil {
 		return err
 	}
-	err = w.TX.Commit()
+	err = tx.Commit()
 	if err != nil {
 		return err
 	}
-	w.TX = nil
+	tx = nil
 	fmt.Printf("Order with '%s' was added successfully\n", ord.OrderID)
 	return nil
 }
 
 func (w *SqlWorker) DeleteDataByOrderID(ctx context.Context, data []byte) error {
 	var ord order.Order
-	err := w.CreateTx()
+	tx, err := w.CreateTx()
 	if err != nil {
-		w.TX = nil
 		return err
 	}
 	err = json.Unmarshal(data, &ord)
 	if err != nil {
 		return err
 	}
-	err = w.DeleteItemsByOrderID(ctx, ord.OrderID)
+	err = w.DeleteItemsByOrderID(ctx, tx, ord.OrderID)
 	if err != nil {
 		return err
 	}
-	err = w.DeleteOrderByID(ctx, ord.OrderID)
+	err = w.DeleteOrderByID(ctx, tx, ord.OrderID)
 	if err != nil {
 		return err
 	}
-	err = w.DeletePaymentByID(ctx, ord.PaymentInfo.TransactionID)
+	err = w.DeletePaymentByID(ctx, tx, ord.PaymentInfo.TransactionID)
 	if err != nil {
 		return err
 	}
-	err = w.TX.Commit()
+	err = tx.Commit()
 	if err != nil {
+		tx.Rollback()
 		return err
 	}
-	w.TX = nil
 	return nil
 }
 
-func (w *SqlWorker) DeleteOrderByID(ctx context.Context, orderID string) error {
+func (w *SqlWorker) DeleteOrderByID(ctx context.Context, tx *sql.Tx, orderID string) error {
 	var err error
 	query := "DELETE FROM orders WHERE order_id = $1"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, orderID,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, orderID,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Delete Order By ID: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) DeletePaymentByID(ctx context.Context, paymentID string) error {
+func (w *SqlWorker) DeletePaymentByID(ctx context.Context, tx *sql.Tx, paymentID string) error {
 	var err error
 	query := "DELETE FROM payments WHERE transaction_id = $1"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, paymentID,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, paymentID,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Delete Payment By ID: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) DeleteItemsByOrderID(ctx context.Context, orderID string) error {
+func (w *SqlWorker) DeleteItemsByOrderID(ctx context.Context, tx *sql.Tx, orderID string) error {
 	var err error
 	query := "DELETE FROM items WHERE order_id = $1"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, orderID,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, orderID,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Delete Items By Order ID: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
+func (w *SqlWorker) AddItem(ctx context.Context, tx *sql.Tx, item *item.Item) error {
 	var err error
 	query := "INSERT INTO items(chrt_id, track_number, price, rid, name, sale," +
 		"size, total_price, nm_id, brand, order_id) VALUES($1, $2, $3, $4, " +
 		"$5, $6, $7, $8, $9, $10, $11)"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query,
 			item.ChrtID, item.TrackNumber, item.Price, item.RID, item.Name,
@@ -329,7 +339,7 @@ func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
 			item.OrderID,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query,
 			item.ChrtID, item.TrackNumber, item.Price, item.RID, item.Name,
 			item.Sale, item.Size, item.TotalPrice, item.NmID, item.Brand,
@@ -337,42 +347,31 @@ func (w *SqlWorker) AddItem(ctx context.Context, item *item.Item) error {
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Add Item query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) CreateTx() error {
-	tx, err := w.DB.Begin()
-	if err != nil {
-		return err
-	}
-	if w.TX != nil {
-		errRoll := w.TX.Rollback()
-		if errRoll != nil {
-			return errRoll
-		}
-	}
-	w.TX = tx
-	return nil
+func (w *SqlWorker) CreateTx() (*sql.Tx, error) {
+	return w.DB.Begin()
 }
 
-func (w *SqlWorker) GetHistoryInterval(ctx context.Context) ([]string, error) {
+func (w *SqlWorker) GetHistoryInterval(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	var err error
 	query := "SELECT order_id FROM history ORDER BY triggered_at DESC LIMIT $1"
 	var rows *sql.Rows
-	if w.TX == nil {
+	if tx == nil {
 		rows, err = w.DB.QueryContext(
 			ctx, query, arguments.CacheSize,
 		)
 	} else {
-		rows, err = w.TX.QueryContext(
+		rows, err = tx.QueryContext(
 			ctx, query, arguments.CacheSize,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return nil, fmt.Errorf("Problem with execution of Add History Order query: %w", errors.Join(err, rollErr))
 	}
 	defer rows.Close()
@@ -381,7 +380,7 @@ func (w *SqlWorker) GetHistoryInterval(ctx context.Context) ([]string, error) {
 		var id string
 		err = rows.Scan(&id)
 		if err != nil {
-			rollErr := w.Rollback()
+			rollErr := tx.Rollback()
 			err = fmt.Errorf("Problem with Scan Id history block: %w", errors.Join(rollErr, err))
 			break
 		}
@@ -394,40 +393,40 @@ func (w *SqlWorker) GetHistoryInterval(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-func (w *SqlWorker) AddPaymentInfo(ctx context.Context, pay *payment.Payment) error {
+func (w *SqlWorker) AddPaymentInfo(ctx context.Context, tx *sql.Tx, pay *payment.Payment) error {
 	var err error
 	query := "INSERT INTO payments(transaction_id, request_id, currency, provider_id, amount, payment_dt," +
 		"bank, delivery_cost, goods_total, custom_fee) VALUES($1, $2, $3, $4, $5, TO_TIMESTAMP($6), $7, $8, $9, $10)"
-	if w.TX == nil {
+	if tx == nil {
 		_, err = w.DB.ExecContext(
 			ctx, query, pay.TransactionID, pay.RequestID, pay.Currency, pay.ProviderID,
 			pay.Amount, pay.PaymentDateTime, pay.Bank, pay.DeliveryCost, pay.GoodsTotal,
 			pay.CustomFee,
 		)
 	} else {
-		_, err = w.TX.ExecContext(
+		_, err = tx.ExecContext(
 			ctx, query, pay.TransactionID, pay.RequestID, pay.Currency, pay.ProviderID,
 			pay.Amount, pay.PaymentDateTime, pay.Bank, pay.DeliveryCost, pay.GoodsTotal,
 			pay.CustomFee,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		return fmt.Errorf("Problem with execution of Add PaymentInfo query: %w", errors.Join(err, rollErr))
 	}
 	return nil
 }
 
-func (w *SqlWorker) GetOrderByID(ctx context.Context, orderID string) (*order.Order, *customerrors.CustomError) {
+func (w *SqlWorker) GetOrderByID(ctx context.Context, tx *sql.Tx, orderID string) (*order.Order, *customerrors.CustomError) {
 	var customErr customerrors.CustomError
 	query := "SELECT * FROM orders WHERE order_id = $1"
 	var row *sql.Row
-	if w.TX == nil {
+	if tx == nil {
 		row = w.DB.QueryRowContext(
 			ctx, query, orderID,
 		)
 	} else {
-		row = w.TX.QueryRowContext(
+		row = tx.QueryRowContext(
 			ctx, query, orderID,
 		)
 	}
@@ -439,7 +438,7 @@ func (w *SqlWorker) GetOrderByID(ctx context.Context, orderID string) (*order.Or
 		&ord.SmID, &ord.OofShard, &ord.DateCreated,
 	)
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get Order By ID scan: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -447,16 +446,16 @@ func (w *SqlWorker) GetOrderByID(ctx context.Context, orderID string) (*order.Or
 	return &ord, nil
 }
 
-func (w *SqlWorker) GetPaymentByID(ctx context.Context, paymentID string) (*payment.Payment, *customerrors.CustomError) {
+func (w *SqlWorker) GetPaymentByID(ctx context.Context, tx *sql.Tx, paymentID string) (*payment.Payment, *customerrors.CustomError) {
 	var customErr customerrors.CustomError
 	query := "SELECT * FROM payments WHERE transaction_id = $1"
 	var row *sql.Row
-	if w.TX == nil {
+	if tx == nil {
 		row = w.DB.QueryRowContext(
 			ctx, query, paymentID,
 		)
 	} else {
-		row = w.TX.QueryRowContext(
+		row = tx.QueryRowContext(
 			ctx, query, paymentID,
 		)
 	}
@@ -468,7 +467,7 @@ func (w *SqlWorker) GetPaymentByID(ctx context.Context, paymentID string) (*paym
 	)
 	pay.PaymentDateTime = t.Unix()
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get Payment By ID scan: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -476,23 +475,23 @@ func (w *SqlWorker) GetPaymentByID(ctx context.Context, paymentID string) (*paym
 	return &pay, nil
 }
 
-func (w *SqlWorker) GetUserByPhone(ctx context.Context, phone string) (*user.User, *customerrors.CustomError) {
+func (w *SqlWorker) GetUserByPhone(ctx context.Context, tx *sql.Tx, phone string) (*user.User, *customerrors.CustomError) {
 	var customErr customerrors.CustomError
 	query := "SELECT * FROM users WHERE phonenumber = $1"
 	var row *sql.Row
-	if w.TX == nil {
+	if tx == nil {
 		row = w.DB.QueryRowContext(
 			ctx, query, phone,
 		)
 	} else {
-		row = w.TX.QueryRowContext(
+		row = tx.QueryRowContext(
 			ctx, query, phone,
 		)
 	}
 	var usr user.User
 	err := row.Scan(&usr.Phonenumber, &usr.Name, &usr.Email, &usr.AddressID)
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get User By Phone scan: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -500,23 +499,23 @@ func (w *SqlWorker) GetUserByPhone(ctx context.Context, phone string) (*user.Use
 	return &usr, nil
 }
 
-func (w *SqlWorker) GetAddressByID(ctx context.Context, id int64) (*user.Address, *customerrors.CustomError) {
+func (w *SqlWorker) GetAddressByID(ctx context.Context, tx *sql.Tx, id int64) (*user.Address, *customerrors.CustomError) {
 	var customErr customerrors.CustomError
 	query := "SELECT zipcode, city, address, region FROM addresses WHERE id = $1"
 	var row *sql.Row
-	if w.TX == nil {
+	if tx == nil {
 		row = w.DB.QueryRowContext(
 			ctx, query, id,
 		)
 	} else {
-		row = w.TX.QueryRowContext(
+		row = tx.QueryRowContext(
 			ctx, query, id,
 		)
 	}
 	var usr user.Address
 	err := row.Scan(&usr.Zipcode, &usr.City, &usr.Address, &usr.Region)
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get Address By ID scan: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -524,22 +523,22 @@ func (w *SqlWorker) GetAddressByID(ctx context.Context, id int64) (*user.Address
 	return &usr, nil
 }
 
-func (w *SqlWorker) GetItemsByOrderID(ctx context.Context, orderID string) ([]item.Item, *customerrors.CustomError) {
+func (w *SqlWorker) GetItemsByOrderID(ctx context.Context, tx *sql.Tx, orderID string) ([]item.Item, *customerrors.CustomError) {
 	var err error
 	var customErr customerrors.CustomError
 	query := "SELECT * FROM items WHERE order_id = $1"
 	var rows *sql.Rows
-	if w.TX == nil {
+	if tx == nil {
 		rows, err = w.DB.QueryContext(
 			ctx, query, orderID,
 		)
 	} else {
-		rows, err = w.TX.QueryContext(
+		rows, err = tx.QueryContext(
 			ctx, query, orderID,
 		)
 	}
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get Items By OrderID query: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -553,7 +552,7 @@ func (w *SqlWorker) GetItemsByOrderID(ctx context.Context, orderID string) ([]it
 			&itm.Sale, &itm.Size, &itm.TotalPrice, &itm.NmID, &itm.Brand, &itm.OrderID,
 		)
 		if err != nil {
-			rollErr := w.Rollback()
+			rollErr := tx.Rollback()
 			customErr.Message = fmt.Errorf("Problem with execution of Get Items By OrderID scan: %w", errors.Join(err, rollErr)).Error()
 			customErr.Status = http.StatusInternalServerError
 			return nil, &customErr
@@ -562,7 +561,7 @@ func (w *SqlWorker) GetItemsByOrderID(ctx context.Context, orderID string) ([]it
 	}
 	err = rows.Err()
 	if err != nil {
-		rollErr := w.Rollback()
+		rollErr := tx.Rollback()
 		customErr.Message = fmt.Errorf("Problem with execution of Get Items By OrderID rows.Err: %w", errors.Join(err, rollErr)).Error()
 		customErr.Status = http.StatusInternalServerError
 		return nil, &customErr
@@ -623,7 +622,7 @@ func (w *SqlWorker) CreateDefaultTables() error {
 }
 
 func (w *SqlWorker) GetDataByID(ctx context.Context, id string) (*order.Order, *customerrors.CustomError) {
-	err := w.CreateTx()
+	tx, err := w.CreateTx()
 	if err != nil {
 		cusErr := customerrors.CustomError{
 			Message: "Couldn't create TX",
@@ -632,27 +631,27 @@ func (w *SqlWorker) GetDataByID(ctx context.Context, id string) (*order.Order, *
 		return nil, &cusErr
 	}
 	fmt.Printf("ID '%s' is processing...\n", id)
-	ord, cErr := w.GetOrderByID(ctx, id)
+	ord, cErr := w.GetOrderByID(ctx, tx, id)
 	if cErr != nil {
 		return nil, cErr
 	}
-	usr, cErr := w.GetUserByPhone(ctx, ord.User.Phonenumber)
+	usr, cErr := w.GetUserByPhone(ctx, tx, ord.User.Phonenumber)
 	if cErr != nil {
 		return nil, cErr
 	}
-	itms, cErr := w.GetItemsByOrderID(ctx, ord.OrderID)
+	itms, cErr := w.GetItemsByOrderID(ctx, tx, ord.OrderID)
 	if cErr != nil {
 		return nil, cErr
 	}
-	payInfo, cErr := w.GetPaymentByID(ctx, ord.PaymentInfo.TransactionID)
+	payInfo, cErr := w.GetPaymentByID(ctx, tx, ord.PaymentInfo.TransactionID)
 	if cErr != nil {
 		return nil, cErr
 	}
-	addr, cErr := w.GetAddressByID(ctx, usr.AddressID)
+	addr, cErr := w.GetAddressByID(ctx, tx, usr.AddressID)
 	if cErr != nil {
 		return nil, cErr
 	}
-	err = w.TX.Commit()
+	err = tx.Commit()
 	if err != nil {
 		cErr = &customerrors.CustomError{
 			Message: err.Error(),
@@ -660,7 +659,7 @@ func (w *SqlWorker) GetDataByID(ctx context.Context, id string) (*order.Order, *
 		}
 		return nil, cErr
 	}
-	w.TX = nil
+	tx = nil
 	usr.Address = *addr
 	ord.User = usr
 	ord.PaymentInfo = payInfo

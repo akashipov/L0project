@@ -5,9 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,9 +18,9 @@ import (
 func TestSqlWorker_AddData(t *testing.T) {
 	type fields struct {
 		DB *sql.DB
-		TX *sql.Tx
 	}
-	Start()
+	ctx := context.Background()
+	Start(ctx, t)
 	type args struct {
 		ctx          context.Context
 		dataFilename string
@@ -38,10 +35,9 @@ func TestSqlWorker_AddData(t *testing.T) {
 			name: "common_case",
 			fields: fields{
 				DB: DBWorker.DB,
-				TX: nil,
 			},
 			args: args{
-				ctx:          context.Background(),
+				ctx:          ctx,
 				dataFilename: "order.json",
 			},
 			waitErr: false,
@@ -50,29 +46,21 @@ func TestSqlWorker_AddData(t *testing.T) {
 			name: "common_again",
 			fields: fields{
 				DB: DBWorker.DB,
-				TX: nil,
 			},
 			args: args{
-				ctx:          context.Background(),
+				ctx:          ctx,
 				dataFilename: "order.json",
 			},
 			waitErr: true,
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	for _, tt := range tests {
-		d := os.Getenv("PROJECT_DIR")
-		f, err := os.OpenFile(
-			filepath.Join(d, "cmd/publisher/"+tt.args.dataFilename),
-			os.O_RDONLY, 0000,
-		)
-		require.Equal(t, nil, err)
-		data, err := io.ReadAll(f)
+		data, err := Read("/statics/test/" + tt.args.dataFilename)
 		require.Equal(t, nil, err)
 		w := &SqlWorker{
 			DB: tt.fields.DB,
-			TX: tt.fields.TX,
 		}
 		defer func(c context.Context, d []byte) {
 			err := w.DeleteDataByOrderID(c, d)
@@ -81,9 +69,9 @@ func TestSqlWorker_AddData(t *testing.T) {
 			} else {
 				fmt.Println("Data were deleted!")
 			}
-		}(tt.args.ctx, data)
+		}(tt.args.ctx, []byte(data))
 		t.Run(tt.name, func(t *testing.T) {
-			err := w.AddData(tt.args.ctx, data)
+			err := w.AddData(tt.args.ctx, []byte(data))
 			if tt.waitErr {
 				require.NotEqual(t, nil, err)
 				return
@@ -92,10 +80,10 @@ func TestSqlWorker_AddData(t *testing.T) {
 			}
 
 			var ord order.Order
-			err = json.Unmarshal(data, &ord)
+			err = json.Unmarshal([]byte(data), &ord)
 			require.Equal(t, nil, err)
 			var ordFromDB *order.Order
-			ordFromDB, cErr := w.GetOrderByID(ctx, ord.OrderID)
+			ordFromDB, cErr := w.GetOrderByID(ctx, nil, ord.OrderID)
 			var emptyCErr *customerrors.CustomError
 			require.Equal(t, emptyCErr, cErr)
 			assert.Equal(t, ord.DateCreated, ordFromDB.DateCreated)

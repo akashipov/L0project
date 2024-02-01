@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/akashipov/L0project/internal/storage/cache"
 	"github.com/akashipov/L0project/internal/storage/postgres"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -14,7 +15,9 @@ func TestNewServer(t *testing.T) {
 		ctx context.Context
 		log zap.SugaredLogger
 	}
-	postgres.Start()
+	ctx := context.Background()
+	postgres.Start(ctx, t)
+	cache.InitCache(ctx, postgres.Log)
 	tests := []struct {
 		name    string
 		args    args
